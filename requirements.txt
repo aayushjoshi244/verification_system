@@ -1,0 +1,15 @@
+numpy
+pandas
+openpyxl
+opencv-python
+matplotlib
+scikit-learn
+tqdm
+mediapipe
+insightface
+onnxruntime
+librosa
+pydub
+webrtcvad
+torch>=2.2,<2.4      
+torchaudio>=2.2,<2.4 

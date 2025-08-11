@@ -1,0 +1,12 @@
+{
+  "mode": "holdout",
+  "accuracy_closed_set": 1.0,
+  "per_class_f1": {
+    "aayush_joshi": 1.0,
+    "prisha_joshi": 1.0,
+    "vansh_verma": 1.0
+  },
+  "support": 7,
+  "threshold_recommended": 0.4,
+  "threshold_recommended_accuracy": 1.0
+}
