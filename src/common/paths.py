@@ -33,6 +33,13 @@ PRED_FACE_DIR = RUNS / "face" / "pred_images" # Annotated predictions for folder
 # -------------------------
 MODELS_FACE_DIR = MODELS / "face"           # Saved SVM model + label map
 
+# Predictions
+PRED_FACE_DIR = RUNS / "face" / "predictions"
+
+# Clean data storage
+CLEAN_FACE_DIR = PROC / "face" / "clean"
+CLEAN_EMB_DIR  = RUNS / "face" / "clean_embeddings"
+
 # -------------------------
 # Ensure directories exist
 # -------------------------
