@@ -11,7 +11,8 @@ Modes:
 Dependencies: opencv-python, mediapipe, insightface, onnxruntime, numpy, pandas, tqdm, scikit-learn
 """
 
-import sys, time, subprocess, json
+import sys, time, subprocess, json, math
+import numpy as np
 from pathlib import Path
 import cv2
 
@@ -75,6 +76,70 @@ def calc_illum(image_bgr):
     g = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     return float(g.mean())
 
+# ---------- head pose (yaw) using FaceMesh + solvePnP ----------
+# MediaPipe landmark indices
+LM_NOSE_TIP = 1
+LM_CHIN     = 152
+LM_EYE_L    = 33    # left eye outer corner
+LM_EYE_R    = 263   # right eye outer corner
+LM_MOUTH_L  = 61
+LM_MOUTH_R  = 291
+
+# Generic 3D face model (mm)
+MODEL_POINTS_3D = np.array([
+    [0.0,   0.0,   0.0],     # Nose tip
+    [0.0, -63.6, -12.5],     # Chin
+    [-43.3, 32.7, -26.0],    # Left eye outer corner
+    [ 43.3, 32.7, -26.0],    # Right eye outer corner
+    [-28.9,-28.9, -24.1],    # Left mouth corner
+    [ 28.9,-28.9, -24.1],    # Right mouth corner
+], dtype=np.float64)
+def estimate_yaw_deg(face_landmarks, w, h):
+    """Return yaw in degrees. Right turn = positive; Left = negative."""
+    pts2d = []
+    for idx in [LM_NOSE_TIP, LM_CHIN, LM_EYE_L, LM_EYE_R, LM_MOUTH_L, LM_MOUTH_R]:
+        lm = face_landmarks.landmark[idx]
+        pts2d.append([lm.x * w, lm.y * h])
+    image_points = np.array(pts2d, dtype=np.float64)
+
+    # Approx camera intrinsics
+    f = w  # focal length ~ width (pixels)
+    cx, cy = w / 2.0, h / 2.0
+    cam_mtx = np.array([[f, 0, cx],
+                        [0, f, cy],
+                        [0, 0, 1]], dtype=np.float64)
+    dist = np.zeros((4, 1), dtype=np.float64)
+
+    ok, rvec, tvec = cv2.solvePnP(MODEL_POINTS_3D, image_points, cam_mtx, dist, flags=cv2.SOLVEPNP_ITERATIVE)
+    if not ok:
+        return None
+
+    R, _ = cv2.Rodrigues(rvec)
+    # ZYX euler (yaw around Y)
+    sy = math.sqrt(R[0,0]*R[0,0] + R[1,0]*R[1,0])
+    yaw = math.degrees(math.atan2(R[2,0], sy))  # right positive
+    return float(yaw)
+
+def yaw_range_for_phase(phase_key):
+    """Return (min_yaw, max_yaw) in degrees for FRONT/LEFT/RIGHT."""
+    if phase_key == "FRONT":
+        return (-10.0, 10.0)
+    if phase_key == "LEFT":
+        return (-40.0, -15.0)
+    if phase_key == "RIGHT":
+        return (15.0, 40.0)
+    return (-999.0, 999.0)  # fallback
+
+def draw_text(img, text, org, scale=0.8, color=(0,255,0), thick=2):
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
+def draw_progress(img, x, y, w, h, frac, ok):
+    frac = max(0.0, min(1.0, float(frac)))
+    cv2.rectangle(img, (x, y), (x+w, y+h), (80, 80, 80), 2)
+    fill_w = int(w * frac)
+    color = (0, 200, 0) if ok else (0, 165, 255)
+    cv2.rectangle(img, (x+2, y+2), (x+2+fill_w, y+h-2), color, -1)
+
 # ---------- helpers ----------
 def run_step(module: str, extra_args=None) -> int:
     """Run a module like python -m src.facerec.01_import_detect with optional args list."""
@@ -108,99 +173,141 @@ def guided_register(name: str,
                     blur_min: float = 20.0,
                     illum_min: float = 30.0,
                     illum_max: float = 220.0,
-                    cam_index: int = 0):
+                    cam_index: int = 0,
+                    stable_needed: int = 6,
+                    progress_w: int = 320):
     """
-    Capture front/left/right shots with FaceMesh overlay, store to data/raw/face/<name>/.
-    We don't do strict head-pose math here; we guide user + enforce quality gates.
+    Automatically capture FRONT, LEFT, and RIGHT shots with FaceMesh overlay.
+    Person can start in any angle — system auto-detects yaw and categorizes.
+    Limited extremes so we ignore overly turned faces (|yaw| > 40°).
     """
     person_dir = FACE_RAW / name
     person_dir.mkdir(parents=True, exist_ok=True)
 
     cap = ensure_cam(cam_index, 1280, 720)
     mh = MeshHelper()
-
     window = big_window(f"Face Registration — {name} (q=quit, space=manual capture)")
 
-    phases = [
-        ("FRONT", "Look straight at the camera"),
-        ("LEFT",  "Turn your face slightly to the LEFT"),
-        ("RIGHT", "Turn your face slightly to the RIGHT"),
-    ]
+    # Consistent classification AND display bounds (no gaps)
+    PHASE_BOUNDS = {
+        "FRONT": (-12.0,  12.0),
+        "LEFT":  (-40.0,  -12.0),
+        "RIGHT": ( 12.0,   40.0),
+    }
 
+    def classify_phase(yaw: float):
+        if yaw is None:
+            return None
+        if PHASE_BOUNDS["FRONT"][0] <= yaw <= PHASE_BOUNDS["FRONT"][1]:
+            return "FRONT"
+        if PHASE_BOUNDS["LEFT"][0] <= yaw <  PHASE_BOUNDS["LEFT"][1]:
+            return "LEFT"
+        if PHASE_BOUNDS["RIGHT"][0] <  yaw <= PHASE_BOUNDS["RIGHT"][1]:
+            return "RIGHT"
+        return None  # too extreme (|yaw| > 40°) → ignore
+
+    counts = {"FRONT": 0, "LEFT": 0, "RIGHT": 0}
+    total_needed = per_pose * len(counts)
+
+    cooldown = 0
+    stable = 0
     saved_total = 0
 
-    for phase_idx, (phase_key, phase_msg) in enumerate(phases, 1):
-        saved_phase = 0
-        hint = f"[{phase_idx}/{len(phases)}] {phase_msg}. Capturing {per_pose} good frames…"
-        print(hint)
+    print(f"[INFO] Need {per_pose} good captures per angle (FRONT/LEFT/RIGHT).")
 
-        cooldown = 0  # cool-down frames between captures
-        while saved_phase < per_pose:
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.05)
-                continue
+    while sum(counts.values()) < total_needed:
+        ok, frame = cap.read()
+        if not ok:
+            time.sleep(0.05)
+            continue
 
-            # overlay text
-            overlay = frame.copy()
-            cv2.putText(overlay, hint, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2, cv2.LINE_AA)
-            cv2.putText(overlay, f"Saved in phase: {saved_phase}/{per_pose}", (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2, cv2.LINE_AA)
+        overlay = frame.copy()
+        cv2.putText(overlay,
+                    f"Captures: F={counts['FRONT']} L={counts['LEFT']} R={counts['RIGHT']}",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2, cv2.LINE_AA)
 
-            # FaceMesh (for cool visuals)
-            res = mh.process(frame)
-            overlay = mh.draw(overlay, res)
+        res = mh.process(frame)
+        overlay = mh.draw(overlay, res)
 
-            # basic quality check on the estimated face bbox from landmarks
-            ok_to_capture = False
-            if res and res.multi_face_landmarks:
-                lm = res.multi_face_landmarks[0].landmark
-                xs = [int(l.x * frame.shape[1]) for l in lm]
-                ys = [int(l.y * frame.shape[0]) for l in lm]
-                x1, x2 = max(min(xs), 0), min(max(xs), frame.shape[1]-1)
-                y1, y2 = max(min(ys), 0), min(max(ys), frame.shape[0]-1)
-                w, h = x2 - x1, y2 - y1
+        ok_quality = False
+        ok_angle = False
+        phase_key = None
+        yaw = None
 
-                # consider only reasonable face boxes
-                if w > 160 and h > 160:
-                    crop = frame[y1:y2, x1:x2]
-                    blur = calc_blur(crop)
-                    illum = calc_illum(crop)
-                    if blur >= blur_min and illum_min <= illum <= illum_max:
-                        ok_to_capture = True
+        if res and res.multi_face_landmarks:
+            fl = res.multi_face_landmarks[0]
+            h, w = frame.shape[:2]
 
-                    # show quick metrics
-                    cv2.putText(overlay, f"blur:{blur:.0f} illum:{illum:.0f}", (20, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+            xs = [int(l.x * w) for l in fl.landmark]
+            ys = [int(l.y * h) for l in fl.landmark]
+            x1, x2 = max(min(xs), 0), min(max(xs), w - 1)
+            y1, y2 = max(min(ys), 0), min(max(ys), h - 1)
+            ww, hh = x2 - x1, y2 - y1
 
-            # show frame
-            cv2.imshow(window, overlay)
-            key = cv2.waitKey(1) & 0xFF
+            if ww > 160 and hh > 160:
+                crop = frame[y1:y2, x1:x2]
+                blur = calc_blur(crop)
+                illum = calc_illum(crop)
+                ok_quality = (blur >= blur_min) and (illum_min <= illum <= illum_max)
+                draw_text(overlay, f"blur:{blur:.0f} illum:{illum:.0f}",
+                          (20, 80), 0.7, (255,255,255), 2)
 
-            # Manual capture (space)
-            manual = (key == 32)  # spacebar
-            if key == ord('q'):
-                cap.release(); cv2.destroyAllWindows()
-                print("[INFO] Registration aborted by user.")
-                sys.exit(0)
+            yaw = estimate_yaw_deg(fl, w, h)
+            if yaw is not None:
+                draw_text(overlay, f"yaw:{yaw:5.1f}°", (20, 110), 0.7, (255,255,255), 2)
+                phase_key = classify_phase(yaw)
 
-            if cooldown > 0:
-                cooldown -= 1
-                continue
+                if phase_key:
+                    ymin, ymax = PHASE_BOUNDS[phase_key]
+                    ok_angle = (ymin <= yaw <= ymax)
+                    draw_text(overlay,
+                              f"{phase_key} target:{ymin:.0f}..{ymax:.0f}",
+                              (20, 140), 0.7,
+                              (0,255,0) if ok_angle else (0,165,255), 2)
+                else:
+                    draw_text(overlay, "Angle too extreme — turn slightly toward camera",
+                              (20, 140), 0.7, (0,165,255), 2)
+        else:
+            draw_text(overlay, "No face detected", (20, 80), 0.8, (0,165,255), 2)
 
-            # auto capture when ok_to_capture or manual capture pressed
-            if ok_to_capture or manual:
-                ts = int(time.time() * 1000)
-                outp = person_dir / f"{phase_key.lower()}_{ts}.jpg"
-                cv2.imwrite(str(outp), frame)
-                saved_phase += 1
-                saved_total += 1
-                cooldown = 10  # a short cool-down to avoid bursts
+        # Stability logic
+        if phase_key and ok_angle:
+            stable = min(stable + 1, stable_needed)
+        else:
+            stable = 0
+
+        # Progress bar for angle stability
+        draw_progress(overlay, 20, 170, progress_w, 16, stable / stable_needed, ok_angle)
+
+        # Show frame
+        cv2.imshow(window, overlay)
+        key = cv2.waitKey(1) & 0xFF
+
+        manual = (key == 32)  # spacebar
+        if key == ord('q'):
+            cap.release(); cv2.destroyAllWindows()
+            print("[INFO] Registration aborted by user.")
+            sys.exit(0)
+
+        if cooldown > 0:
+            cooldown -= 1
+            continue
+
+        # Save only when classified, under quota, and quality + stability OK (or manual)
+        if phase_key and counts[phase_key] < per_pose and ((stable >= stable_needed and ok_quality) or manual):
+            ts = int(time.time() * 1000)
+            outp = person_dir / f"{phase_key.lower()}_{ts}.jpg"
+            cv2.imwrite(str(outp), frame)
+            counts[phase_key] += 1
+            saved_total += 1
+            cooldown = 10
+            stable = 0
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"[OK] Saved {saved_total} images for '{name}' to: {person_dir}")
+    print(f"[OK] Saved {saved_total} images for '{name}' in: {person_dir}")
     return person_dir
+
 
 # ---------- Orchestration ----------
 def run_full_pipeline_and_infer(sim_th=0.45, unk_th=None, cam_index=0):
@@ -309,3 +416,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
