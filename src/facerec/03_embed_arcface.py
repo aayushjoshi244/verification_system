@@ -139,6 +139,18 @@ def main():
     # Save NPZ
     EMB_FACE_DIR.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.out_npz, X=X, y=y, label_map=label_map, paths=paths)
+    # --- prototypes per class (cosine centroids) ---
+    # Each prototype = L2-normalized mean embedding for that person
+    protos = np.zeros((len(label_map), X.shape[1]), dtype=np.float32)
+    for name, cls_id in label_map.items():
+        m = (y == cls_id)
+        v = X[m].mean(axis=0)
+        v = v / (np.linalg.norm(v) + 1e-12)
+        protos[cls_id] = v
+
+    # Save alongside embeddings
+    np.save(EMB_FACE_DIR / "prototypes.npy", protos)
+    print(f"[OK] Prototypes saved: {EMB_FACE_DIR / 'prototypes.npy'}")
     print(f"[OK] Saved embeddings: {args.out_npz}")
     print(f"     Classes: {len(label_map)}  Samples: {len(y)}  Skipped during embed: {skipped}")
 

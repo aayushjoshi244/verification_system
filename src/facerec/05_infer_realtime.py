@@ -4,7 +4,9 @@ import argparse, json, sys, time
 from pathlib import Path
 import cv2, joblib, numpy as np, pandas as pd
 
-from src.common.paths import ensure_dirs, RUNS, PRED_FACE_DIR, MODELS_FACE_DIR, CLEAN_FACE_DIR, CLEAN_EMB_DIR
+from src.common.paths import CLEAN_EMB_DIR, CLEAN_FACE_DIR, ensure_dirs, RUNS, PRED_FACE_DIR, MODELS_FACE_DIR, EMB_FACE_DIR
+
+PROTOS = None  # will be loaded in main()
 
 # ---------- quality helpers ----------
 def calc_blur(image_bgr):
@@ -141,6 +143,17 @@ def maybe_save_clean(person, conf, frame_bgr, face_obj, emb_vec, args):
     pd.DataFrame([row]).to_csv(log_csv, mode="a", header=not log_csv.exists(), index=False, encoding="utf-8")
     return row
 
+def gate_by_similarity(embeds, protos):
+    """
+    embeds: [N,512] L2-normalized; protos: [C,512] L2-normalized
+    returns max_sim [N], best_cls [N]
+    """
+    sims = embeds @ protos.T
+    max_sim = sims.max(axis=1)
+    best_cls = sims.argmax(axis=1)
+    return max_sim, best_cls
+
+
 # ---------- folder mode ----------
 def run_folder(app, clf, id2name, unknown_th, images_dir, out_dir, csv_log, args):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -155,14 +168,37 @@ def run_folder(app, clf, id2name, unknown_th, images_dir, out_dir, csv_log, args
             rows.append({"image": str(p), "name": "", "conf": "", "bbox": "", "note": "no_face"})
         else:
             embeds = np.stack([e for (_, e) in faces], axis=0)
-            names, confs = predict_names(clf, embeds, id2name, unknown_th)
+
+            # 1) cosine gate
+            max_sim, best_cls = gate_by_similarity(embeds, PROTOS)
+            pass_mask = (max_sim >= args.sim_th)
+
+            names = ["unknown"] * len(embeds)
+            confs = [0.0] * len(embeds)
+
+            if args.gate_only:
+                for i in range(len(embeds)):
+                    if pass_mask[i]:
+                        names[i] = id2name[int(best_cls[i])]
+                        confs[i] = float(max_sim[i])
+            else:
+                if pass_mask.any():
+                    idx = np.where(pass_mask)[0]
+                    sv_names, sv_confs = predict_names(clf, embeds[idx], id2name, unknown_th)
+                    for j, k in enumerate(idx):
+                        names[k] = sv_names[j]
+                        confs[k] = sv_confs[j]
+
             for i, (f, emb) in enumerate(faces):
                 name = names[i]
                 conf  = confs[i]
                 x1, y1, x2, y2 = map(int, f.bbox)
-                ...
-                if args.save_clean:
+                cv2.rectangle(bgr, (x1,y1), (x2,y2), (0,255,0), 2)
+                draw_label(bgr, f"{name} ({conf:.2f})", x1, y1)
+                rows.append({"image": str(p), "name": name, "conf": conf, "bbox": [x1,y1,x2,y2], "note": ""})
+                if args.save_clean and name != "unknown":
                     maybe_save_clean(name, conf, bgr, f, emb, args)
+
 
         outp = out_dir / f"pred_{p.name}"; cv2.imwrite(str(outp), bgr)
     if rows: pd.DataFrame(rows).to_csv(csv_log, index=False, encoding="utf-8"); print(f"[OK] Predictions CSV: {csv_log}")
@@ -175,13 +211,13 @@ def run_webcam(app, clf, id2name, unknown_th, args):
         print(f"ERROR: Could not open camera index {args.source}")
         sys.exit(4)
 
-    # Request Full HD from the camera
+    # Full HD request
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 560)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
-    cv2.namedWindow("Face Recognition", cv2.WINDOW_NORMAL)
-    # Try to maximise the window
-    cv2.setWindowProperty("Face Recognition", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    window = "Face Recognition (q to quit)"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     t0, frames = time.time(), 0
     while True:
@@ -195,7 +231,26 @@ def run_webcam(app, clf, id2name, unknown_th, args):
 
         if faces:
             embeds = np.stack([e for (_, e) in faces], axis=0)
-            names, confs = predict_names(clf, embeds, id2name, unknown_th)
+
+            # 1) cosine gate
+            max_sim, best_cls = gate_by_similarity(embeds, PROTOS)
+            pass_mask = (max_sim >= args.sim_th)
+
+            names = ["unknown"] * len(embeds)
+            confs = [0.0] * len(embeds)
+
+            if args.gate_only:
+                for i in range(len(embeds)):
+                    if pass_mask[i]:
+                        names[i] = id2name[int(best_cls[i])]
+                        confs[i] = float(max_sim[i])
+            else:
+                if pass_mask.any():
+                    idx = np.where(pass_mask)[0]
+                    sv_names, sv_confs = predict_names(clf, embeds[idx], id2name, unknown_th)
+                    for j, k in enumerate(idx):
+                        names[k] = sv_names[j]
+                        confs[k] = sv_confs[j]
 
             for i, (f, emb) in enumerate(faces):
                 name = names[i]
@@ -203,8 +258,7 @@ def run_webcam(app, clf, id2name, unknown_th, args):
                 x1, y1, x2, y2 = map(int, f.bbox)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 draw_label(frame, f"{name} ({conf:.2f})", x1, y1)
-
-                if args.save_clean and (frames % args.every_n == 0):
+                if args.save_clean and (frames % args.every_n == 0) and name != "unknown":
                     maybe_save_clean(name, conf, frame, f, emb, args)
 
         frames += 1
@@ -212,9 +266,8 @@ def run_webcam(app, clf, id2name, unknown_th, args):
             fps = frames / (time.time() - t0 + 1e-9)
             draw_label(frame, f"FPS: {fps:.1f}", 10, 30)
 
-        # Ensure display is also full HD
-        display_frame = cv2.resize(frame, (1920, 1080))
-        cv2.imshow("Face Recognition", display_frame)
+        display_frame = cv2.resize(frame, (1920, 720))
+        cv2.imshow(window, display_frame)
 
         if (cv2.waitKey(1) & 0xFF) == ord('q'):
             break
@@ -235,6 +288,15 @@ def main():
     ap.add_argument("--source", type=int, default=None, help="Webcam index")
     ap.add_argument("--images", type=str, default=None, help="Folder of images to annotate")
     ap.add_argument("--csv-log", type=str, default=str(RUNS / "face" / "preds.csv"))
+    ap.add_argument("--save-embeddings", action="store_true", help="Save face embeddings to disk")
+    
+    # Load cosine prototypes
+    proto_path = EMB_FACE_DIR / "prototypes.npy"
+    if not proto_path.exists():
+        print(f"ERROR: {proto_path} not found. Re-run 03_embed_arcface to create prototypes.")
+        sys.exit(6)
+    global PROTOS
+    PROTOS = np.load(str(proto_path)).astype(np.float32)  # shape [C,512]
 
     # clean capture options
     ap.add_argument("--save-clean", action="store_true", help="Save confident recognitions to clean dataset")
@@ -244,6 +306,11 @@ def main():
     ap.add_argument("--blur-min", type=float, default=20.0)
     ap.add_argument("--illum-min", type=float, default=30.0)
     ap.add_argument("--illum-max", type=float, default=220.0)
+    ap.add_argument("--sim-th", type=float, default=0.45,
+                help="Cosine similarity threshold for open-set gate")
+    ap.add_argument("--gate-only", action="store_true",
+                help="Use only cosine gate (nearest prototype) and skip SVM")
+
     args = ap.parse_args()
 
     if args.source is None and args.images is None:
