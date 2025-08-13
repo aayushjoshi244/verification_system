@@ -8,7 +8,7 @@
     "priya_gurjar": 1.0,
     "vansh_verma": 1.0
   },
-  "support": 15,
+  "support": 16,
   "threshold_recommended": 0.4,
-  "threshold_recommended_accuracy": 0.9333333333333333
+  "threshold_recommended_accuracy": 1.0
 }

@@ -13,3 +13,6 @@ pydub
 webrtcvad
 torch>=2.2,<2.4      
 torchaudio>=2.2,<2.4 
+sounddevice==0.4.7
+soundfile==0.12.1
+speechbrain==0.5.16
