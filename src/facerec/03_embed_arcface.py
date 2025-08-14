@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-03_embed_arcface.py — Compute ArcFace embeddings from aligned faces.
-Inputs:  runs/face/manifest_align.csv  (from 02_align.py)
-Outputs: runs/face/embeddings/5ppl.npz (X,y,label_map,paths)
-         runs/face/embeddings/stats.csv
-"""
+
 
 import argparse
 import json

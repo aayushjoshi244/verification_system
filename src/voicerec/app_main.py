@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-src/voicerec/app_main.py — one-file runner for the whole VOICE pipeline.
-
-Menu:
-1) Enroll a new person (record utterances with VAD) → embed → (optionally) calibrate → verify realtime
-2) Calibrate threshold only (from existing enrol WAVs)
-3) Realtime verify (use prototypes + best threshold found / manual override)
-
-Requires you already have:
-- src.voicerec.01_record_enroll
-- src.voicerec.02_embed_speechbrain
-- src.voicerec.03_verify_realtime
-- src.voicerec.04_calibrate_threshold
-
-Data/Outputs:
-- Enrol WAVs → data/raw/voice/<Name>/*.wav
-- Prototypes  → runs/voice/prototypes/*.npy + runs/voice/index.json
-- Calibration → runs/voice/calibration.json  (optional but recommended)
-"""
 
 import sys, json, subprocess
 from pathlib import Path

@@ -13,7 +13,6 @@ RUNS_ROOT  = Path("runs/voice")
 PROTO_DIR  = RUNS_ROOT / "prototypes"
 INDEX_JSON = RUNS_ROOT / "index.json"
 
-# Put HF cache in project + force copy, not links (Windows-friendly)
 os.environ.setdefault("HF_HOME", str((RUNS_ROOT / "hf_cache").resolve()))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")

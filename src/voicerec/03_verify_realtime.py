@@ -7,7 +7,6 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 import torch
-from speechbrain.pretrained import EncoderClassifier
 import os
 from src.voicerec.hf_loader import load_ecapa_encoder
 

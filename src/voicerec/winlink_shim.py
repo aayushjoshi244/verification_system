@@ -1,11 +1,5 @@
 # src/voicerec/winlink_shim.py
 def patch_links():
-    """
-    On Windows (or restricted environments), replace hardlink/symlink ops with safe copies.
-    - Patches os.link / os.symlink
-    - ALSO patches pathlib.Path.symlink_to / hardlink_to (what SpeechBrain uses)
-    Ensures all paths are plain strings and handles same-file / mkdir edge cases.
-    """
     import os, shutil
     from pathlib import Path
 
