@@ -5,6 +5,8 @@ import sounddevice as sd
 import soundfile as sf
 import webrtcvad
 from pathlib import Path
+import os
+from src.voicerec.hf_loader import load_ecapa_encoder
 
 # --- constants ---
 SR = 16000
@@ -12,6 +14,14 @@ CHAN = 1
 SAMPLE_WIDTH_BYTES = 2
 FRAME_MS = 30                      # 10/20/30ms supported by VAD
 FRAME_SAMPLES = SR * FRAME_MS // 1000
+
+RUNS_ROOT = Path("runs/voice")  # (already in your files)
+
+# Put HF cache in project + force copy, not links (Windows-friendly)
+os.environ.setdefault("HF_HOME", str((RUNS_ROOT / "hf_cache").resolve()))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 
 OUT_ROOT = Path("data/raw/voice")
 

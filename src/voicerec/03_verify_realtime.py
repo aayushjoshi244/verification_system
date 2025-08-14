@@ -1,4 +1,6 @@
 # src/voice/03_verify_realtime.py
+from src.voicerec.winlink_shim import patch_links
+patch_links()
 import sys, time, json, argparse
 from pathlib import Path
 import numpy as np
@@ -6,10 +8,17 @@ import sounddevice as sd
 import webrtcvad
 import torch
 from speechbrain.pretrained import EncoderClassifier
+import os
+from src.voicerec.hf_loader import load_ecapa_encoder
 
 RUNS_ROOT = Path("runs/voice")
 PROTO_DIR = RUNS_ROOT / "prototypes"
 INDEX_JSON = RUNS_ROOT / "index.json"
+
+# Put HF cache in project + force copy, not links (Windows-friendly)
+os.environ.setdefault("HF_HOME", str((RUNS_ROOT / "hf_cache").resolve()))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 SR = 16000
 CHAN = 1
@@ -48,7 +57,6 @@ def record_window(seconds=6, device=None):
         if not np.isfinite(a).all():
             _err("Non-finite samples in capture; discarding.")
             return None
-        # quick level feedback
         peak = float(np.max(np.abs(a)))
         if peak > 0.98:
             print("[WARN] Audio clipped (peak > 0.98). Lower input gain / move back.")
@@ -92,7 +100,6 @@ def vad_collect(audio_f32, aggressiveness=2):
         yield seg
 
 def cosine(a, b):
-    # expects L2-normalized inputs, but safe either way
     na = np.linalg.norm(a) + 1e-9
     nb = np.linalg.norm(b) + 1e-9
     return float(np.dot(a, b) / (na * nb))
@@ -109,11 +116,15 @@ def load_prototypes():
             print(f"[WARN] Missing proto: {p}")
             continue
         v = np.load(p)
-        protos[name] = l2norm(v)  # ensure normalized
+        v = np.asarray(v).squeeze()
+        if v.ndim != 1:
+            v = v.reshape(-1)
+        protos[name] = l2norm(v.astype(np.float32))  # ensure 1-D, float32, L2
     if not protos:
         _err("No prototypes loaded.")
         sys.exit(1)
     return protos
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -136,15 +147,19 @@ def main():
             _err(f"Selected device [{args.device_index}] has no input channels."); sys.exit(2)
 
     mdl_device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load SpeechBrain encoder via Windows-safe loader
     try:
-        encoder = EncoderClassifier.from_hparams(source=args.model, run_opts={"device": mdl_device})
+        encoder = load_ecapa_encoder(args.model, mdl_device)
     except Exception as e:
         _err(f"Failed to load SpeechBrain model: {e}")
         sys.exit(2)
 
+    # Load prototypes and build (N, D) matrix
     protos = load_prototypes()
     names = list(protos.keys())
-    mats = np.stack([protos[n] for n in names], axis=0)
+    mats = np.stack([protos[n] for n in names], axis=0).astype(np.float32)
+    D = int(mats.shape[1])
 
     print(f"[INFO] Loaded {len(names)} speaker prototypes. (model on {mdl_device})")
     print("[INFO] Speak; segments will be auto-detected. Ctrl+C to stop.")
@@ -154,25 +169,40 @@ def main():
             audio = record_window(seconds=6, device=args.device_index)
             if audio is None:
                 continue
+
             for seg in vad_collect(audio, aggressiveness=args.vad):
                 if len(seg) < int(args.min_dur * SR):
                     continue
+
+                # Encode -> numpy -> force 1-D float32
                 try:
                     sig = torch.from_numpy(seg).float().unsqueeze(0).to(mdl_device)  # [1, T]
                     with torch.inference_mode():
-                        emb_t = encoder.encode_batch(sig).squeeze(0)               # [D]
+                        emb_t = encoder.encode_batch(sig)  # (1, D) or (D,)
                     emb = emb_t.detach().cpu().numpy()
+                    emb = np.asarray(emb).squeeze()
+                    if emb.ndim != 1:
+                        emb = emb.reshape(-1)
+                    emb = emb.astype(np.float32)
+                    # L2-normalize
                     emb = l2norm(emb)
                 except Exception as e:
                     print(f"[WARN] Embedding failed for a segment: {e}")
                     continue
 
-                sims = mats @ emb  # since both L2-normalized, dot = cosine
+                # Dimension guard (inside the loop so continue is valid)
+                if emb.size != D:
+                    print(f"[WARN] Embedding dim mismatch: emb={emb.size}, protos={D}. Skipping segment.")
+                    continue
+
+                # Cosine similarities: (N, D) @ (D,) -> (N,)
+                sims = mats @ emb
                 best_i = int(np.argmax(sims))
                 best_name, best_sim = names[best_i], float(sims[best_i])
 
                 label = best_name if best_sim >= args.sim_th else "UNKNOWN"
                 print(f"[VOICE] best={best_name:15s}  sim={best_sim:.3f}  ==> {label}")
+
     except KeyboardInterrupt:
         print("\n[INFO] Stopped.")
     except Exception as e:
