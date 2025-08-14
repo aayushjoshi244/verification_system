@@ -192,7 +192,9 @@ def run_folder(app, clf, id2name, unknown_th, images_dir, out_dir, csv_log, args
             for i, (f, emb) in enumerate(faces):
                 name = names[i]
                 conf  = confs[i]
-                print(f"[FACE] name={name} sim={float(max_sim[i]):.3f}")
+                sim = float(max_sim[i])  # cosine gate similarity
+                if (sim >= args.sim_th) and (name != "unknown"):
+                    print(f"[FACE] name={name} sim={sim:.3f}", flush=True)
                 x1, y1, x2, y2 = map(int, f.bbox)
                 cv2.rectangle(bgr, (x1,y1), (x2,y2), (0,255,0), 2)
                 draw_label(bgr, f"{name} ({conf:.2f})", x1, y1)
@@ -256,7 +258,9 @@ def run_webcam(app, clf, id2name, unknown_th, args):
             for i, (f, emb) in enumerate(faces):
                 name = names[i]
                 conf = confs[i]
-                print(f"[FACE] name={name} sim={float(max_sim[i]):.3f}")
+                sim = float(max_sim[i])  # cosine gate similarity
+                if (sim >= args.sim_th) and (name != "unknown"):
+                    print(f"[FACE] name={name} sim={sim:.3f}", flush=True)
                 x1, y1, x2, y2 = map(int, f.bbox)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 draw_label(frame, f"{name} ({conf:.2f})", x1, y1)
