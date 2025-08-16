@@ -1,15 +1,16 @@
 {
   "mode": "holdout",
-  "accuracy_closed_set": 0.9705882352941176,
+  "accuracy_closed_set": 1.0,
   "per_class_f1": {
-    "Aayush": 0.9411764705882353,
+    "Aayush": 1.0,
+    "Jirayu": 1.0,
     "aayush_joshi": 1.0,
     "ankita_joshi": 1.0,
     "priya_gurjar": 1.0,
-    "vansh_verma": 0.6666666666666666,
+    "vansh_verma": 1.0,
     "youvan_joshi": 1.0
   },
-  "support": 34,
+  "support": 41,
   "threshold_recommended": 0.4,
-  "threshold_recommended_accuracy": 0.9411764705882353
+  "threshold_recommended_accuracy": 1.0
 }
