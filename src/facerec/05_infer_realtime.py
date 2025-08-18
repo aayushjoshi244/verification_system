@@ -1,5 +1,4 @@
-# 05_infer_realtime.py — with clean-data capture
-
+from pathlib import Path
 import argparse, json, sys, time
 from pathlib import Path
 import cv2, joblib, numpy as np, pandas as pd
@@ -7,7 +6,8 @@ import cv2, joblib, numpy as np, pandas as pd
 from src.common.paths import CLEAN_EMB_DIR, CLEAN_FACE_DIR, ensure_dirs, RUNS, PRED_FACE_DIR, MODELS_FACE_DIR, EMB_FACE_DIR
 
 PROTOS = None  # will be loaded in main()
-
+OVERLAY_FILE = (Path(__file__).resolve().parents[2] / "runs" / "face" / "match_overlay.txt")
+OVERLAY_TTL  = 5.0 
 # ---------- quality helpers ----------
 def calc_blur(image_bgr):
     return cv2.Laplacian(image_bgr, cv2.CV_64F).var()
@@ -272,6 +272,19 @@ def run_webcam(app, clf, id2name, unknown_th, args):
             fps = frames / (time.time() - t0 + 1e-9)
             draw_label(frame, f"FPS: {fps:.1f}", 10, 30)
 
+        # --- overlay banner if a recent match occurred (written by main_detect.py) ---
+        try:
+            if OVERLAY_FILE.exists():
+                age = time.time() - OVERLAY_FILE.stat().st_mtime
+                if age <= OVERLAY_TTL:
+                    msg = OVERLAY_FILE.read_text(encoding="utf-8").strip()
+                    H, W = frame.shape[:2]
+                    # green bar at the top
+                    cv2.rectangle(frame, (0, 0), (W, 40), (0, 200, 0), -1)
+                    cv2.putText(frame, msg, (10, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+        except Exception:
+            pass
         display_frame = cv2.resize(frame, (1920, 720))
         cv2.imshow(window, display_frame)
 
