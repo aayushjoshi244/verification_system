@@ -1,0 +1,9 @@
+{
+  "video": "data\\raw\\syncvid\\input.mp4",
+  "audio": "data\\raw\\syncvid\\input.wav",
+  "hop_ms": 20,
+  "max_lag_ms": 300,
+  "score": 0.4784,
+  "lag_ms": -20.0,
+  "sync_ok": true
+}
