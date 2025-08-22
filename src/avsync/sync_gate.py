@@ -195,8 +195,25 @@ def run(video_path: Path, audio_path: Path, hop_ms: int = 20, max_lag_ms: int = 
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
+    import imageio_ffmpeg, subprocess
+
     if not audio_path.exists():
-        raise FileNotFoundError(f"Audio not found: {audio_path}")
+        print(f"[INFO] Audio not found at {audio_path}. Extracting from video...")
+        audio_path = video_path.with_suffix(".wav")
+
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", str(video_path),
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            str(audio_path),
+        ]
+        subprocess.run(cmd, check=True)
+        print(f"[INFO] Extracted audio → {audio_path}")
+
 
     vm, hop_v = mouth_aperture_series(video_path, hop_ms=hop_ms)
 
@@ -242,16 +259,48 @@ def run(video_path: Path, audio_path: Path, hop_ms: int = 20, max_lag_ms: int = 
 def main():
     ap = argparse.ArgumentParser(description="AV Sync Gate (mouth vs audio envelope)")
     ap.add_argument("--video", required=True, help="Path to video file (used for lip tracking)")
-    ap.add_argument("--audio", required=True, help="Path to WAV audio (mono or stereo)")
+    ap.add_argument("--audio", default=None, help="Path to WAV audio. If omitted/missing, it will be extracted from the video.")
     ap.add_argument("--hop-ms", type=int, default=20)
     ap.add_argument("--max-lag-ms", type=int, default=300)
     ap.add_argument("--plot", action="store_true")
     ap.add_argument("--save-series", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="Suppress TensorFlow/Mediapipe/protobuf logs")
     args = ap.parse_args()
-    run(Path(args.video), Path(args.audio),
+
+    video_path = Path(args.video)
+
+    # If user didn't pass --audio, default to <video>.wav in same folder
+    audio_path = Path(args.audio) if args.audio else video_path.with_suffix(".wav")
+
+    # Ensure audio exists; if not, extract it using a bundled ffmpeg
+    if not audio_path.exists():
+        print(f"[INFO] Audio not found at {audio_path}. Extracting from video...")
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import imageio_ffmpeg, subprocess
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()  # portable, no system PATH needed
+            cmd = [
+                ffmpeg_bin, "-y",
+                "-i", str(video_path),
+                "-vn",
+                "-acodec", "pcm_s16le",  # uncompressed PCM
+                "-ar", "16000",          # 16 kHz
+                "-ac", "1",              # mono
+                str(audio_path),
+            ]
+            # keep stdout quiet; show stderr unless --quiet
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+                        stderr=(subprocess.DEVNULL if args.quiet else None))
+            print(f"[INFO] Extracted audio → {audio_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract audio (bundled ffmpeg). Details: {e}")
+
+    run(
+        video_path, audio_path,
         hop_ms=args.hop_ms, max_lag_ms=args.max_lag_ms,
-        plot=args.plot, save_series=args.save_series, quiet=args.quiet)
+        plot=args.plot, save_series=args.save_series, quiet=args.quiet
+    )
+
 
 if __name__ == "__main__":
     main()

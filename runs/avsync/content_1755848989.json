@@ -1,0 +1,41 @@
+{
+  "video": "data\\raw\\syncvid\\div.mp4",
+  "audio": "data\\raw\\syncvid\\div.wav",
+  "hop_ms": 20,
+  "frames": 1028,
+  "duration_s": 20.56,
+  "posterior_dtw_sim": 0.6381,
+  "avg_cost": 0.3619,
+  "path_len": 1550,
+  "top1_agree": 0.136,
+  "threshold": 0.55,
+  "final_ok": true,
+  "class_counts": {
+    "C": {
+      "video_frames": 397,
+      "audio_frames": 160
+    },
+    "F": {
+      "video_frames": 0,
+      "audio_frames": 52
+    },
+    "R": {
+      "video_frames": 604,
+      "audio_frames": 67
+    },
+    "O": {
+      "video_frames": 0,
+      "audio_frames": 274
+    },
+    "N": {
+      "video_frames": 27,
+      "audio_frames": 475
+    }
+  },
+  "params": {
+    "lang": "en",
+    "asr_model": "small",
+    "temp": 0.35,
+    "speech_gate": 0.03
+  }
+}

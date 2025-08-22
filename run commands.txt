@@ -1,0 +1,13 @@
+sync_gate command:
+python -m src.avsync.sync_gate --video "data/raw/syncvid/div.mp4" --plot --quiet
+
+content_match_strong command:
+python -m src.avsync.content_match_strong `                                                
+>>   --video "data/raw/syncvid/input.mp4" `
+>>   --audio "data/raw/syncvid/input.wav" `
+>>   --lang en --asr-model small `
+>>   --temp 0.35 --speech-gate 0.03 --threshold 0.55 `
+>>   --plot --pretty `
+>>   --export-excel "results/avsync_results.xlsx" `
+>>   --export-transcript `
+>>   --subject-id S001 --session-id Day1 --trial clip01 --note "baseline"
