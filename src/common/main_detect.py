@@ -253,9 +253,9 @@ def main():
                     last_face_t = 0.0
                 continue
 
-            if line is None:
-                # a stream ended; loop will restart it above
-                continue
+            # show child outputs according to --echo policy
+            if should_echo(tag, line, args.echo):
+                print(f"[{tag}] {line}")
 
             now = time.time()
             updated = False
