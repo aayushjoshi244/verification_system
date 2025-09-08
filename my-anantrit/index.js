@@ -74,7 +74,7 @@ async function init() {
   try {
     const wavPath = await recordOnce({ seconds: 5, file: "input.wav" });
     const reply = await askGeminiWithAudio(wavPath);
-    console.log("\n🤖 Gemini:", reply);
+    console.log("\n🤖 ANANTRIT:", reply);
   } catch (err) {
     console.error("Error occurred:", err);
   }
