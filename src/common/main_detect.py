@@ -7,6 +7,8 @@ import pandas as pd
 import os
 from typing import Optional, Tuple, Deque, Dict
 from collections import deque
+import platform  # ADDED
+import shutil    # ADDED
 
 # ---------- parsing ----------
 VOICE_RE = re.compile(r"\[VOICE\].*==>\s*([A-Za-z0-9_\- ]+)", re.I)
@@ -156,8 +158,95 @@ def should_echo(tag: str, line: str, echo_mode: str) -> bool:
         return True
     return False
 
+# ---------- ADDED: cross-platform TTS helper ----------
+def _tts_speak(text: str, voice: Optional[str] = None):
+    """
+    Best-effort cross-platform TTS.
+    - macOS: say [-v VOICE] "text"
+    - Linux: spd-say "text"  (fallback: espeak "text")
+    - Windows: PowerShell System.Speech
+    Silently no-ops if no TTS tool is available.
+    """
+    try:
+        if sys.platform == "darwin":
+            cmd = ["say"]
+            if voice:
+                cmd += ["-v", voice]
+            cmd += [text]
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
 
-def notify_success(name: str, beep: bool, write_overlay: bool):
+        if sys.platform.startswith("linux"):
+            if shutil.which("spd-say"):
+                subprocess.Popen(["spd-say", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            if shutil.which("espeak") or shutil.which("espeak-ng"):
+                espeak = "espeak-ng" if shutil.which("espeak-ng") else "espeak"
+                subprocess.Popen([espeak, text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            return  # no TTS tool; silently skip
+
+        if sys.platform.startswith("win"):
+            safe_text  = text.replace('"', r'`"')
+            safe_voice = (voice or "").replace('"', r'`"')
+            ps = (
+                'Add-Type -AssemblyName System.Speech;'
+                '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;'
+                f'if ("{safe_voice}" -ne "") {{ try {{$s.SelectVoice("{safe_voice}")}} catch {{}} }};'
+                f'$s.Speak("{safe_text}");'
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            return
+    except Exception:
+        # Don’t crash pipeline if TTS fails
+        pass
+
+# ---------- ADDED: Agentic AI launcher ----------
+_AGENTIC_STARTED = False  # track to prevent multiple launches when --run-agentic-once is set
+
+def run_agentic_ai(agentic_dir: Path, agentic_cmd: str, once: bool):
+    """
+    Change directory into the agentic project and run its dev command.
+    Spawns non-blocking so the detection loop continues.
+    """
+    global _AGENTIC_STARTED
+    try:
+        if once and _AGENTIC_STARTED:
+            print("[INFO] Agentic AI already started (once). Skipping.")
+            return
+
+        if not agentic_dir.exists():
+            print(f"[ERROR] Agentic dir does not exist: {agentic_dir}")
+            return
+
+        # On Windows, shell=True will find pnpm.cmd. On POSIX, keep shell=False.
+        use_shell = sys.platform.startswith("win")
+        cmd = agentic_cmd if use_shell else agentic_cmd.split()
+
+        # Detach process so it stays up independently
+        creationflags = 0
+        if sys.platform.startswith("win"):
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+
+        subprocess.Popen(
+            cmd,
+            cwd=str(agentic_dir),
+            shell=use_shell,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        _AGENTIC_STARTED = True
+        print(f"[INFO] Started Agentic AI in {agentic_dir} with `{agentic_cmd}`")
+    except Exception as e:
+        print(f"[ERROR] Failed to start Agentic AI: {e}")
+
+def notify_success(name: str, beep: bool, write_overlay: bool, speak: bool = False, tts_voice: Optional[str] = None,
+                   run_agentic: bool = False, agentic_dir: Optional[str] = None, agentic_cmd: Optional[str] = None,
+                   run_agentic_once: bool = False):  # MODIFIED SIGNATURE
     print(f"\n[SUCCESS] Matched: {name}\n")
     if beep and sys.platform.startswith("win"):
         try:
@@ -171,6 +260,16 @@ def notify_success(name: str, beep: bool, write_overlay: bool):
             OVERLAY_FILE.write_text(f"OK: {name} @ {datetime.now().strftime('%H:%M:%S')}", encoding="utf-8")
         except Exception:
             pass
+    # ---------- ADDED: speak greeting ----------
+    if speak:
+        _tts_speak(f"Welcome {name}, how may I help you.", voice=tts_voice)
+    # ---------- ADDED: optionally start agentic dev server ----------
+    if run_agentic:
+        run_agentic_ai(
+            agentic_dir=Path(agentic_dir) if agentic_dir else (PROJECT_ROOT / "my-anantrit"),
+            agentic_cmd=agentic_cmd or "pnpm dev",
+            once=run_agentic_once
+        )
 
 # ---------------- continuous parallel loop ----------------
 
@@ -187,13 +286,28 @@ def main():
     ap.add_argument("--suppress-warnings", action="store_true",
                 help="Hide Python warnings (e.g., FutureWarning spam)")
 
-
     # new: streaming matching controls
     ap.add_argument("--match-window", type=float, default=3.0, help="Seconds in which voice & face names must coincide")
     ap.add_argument("--cooldown", type=float, default=4.0, help="Seconds to suppress repeated logs for same person")
     ap.add_argument("--beep-on-match", action="store_true", help="Play a short beep when matched")
     ap.add_argument("--overlay-on-match", action="store_true",
                     help="Write runs/face/match_overlay.txt with a message (hook for camera overlay)")
+
+    # ---------- ADDED: speech options ----------
+    ap.add_argument("--speak-on-match", action="store_true",
+                    help="Speak 'Welcome [name], how may I help you.' on successful match")
+    ap.add_argument("--tts-voice", type=str, default="",
+                    help="Optional TTS voice (macOS: 'Samantha'; Windows: SAPI voice name; Linux: uses spd-say/espeak)")
+
+    # ---------- ADDED: agentic launcher options ----------
+    ap.add_argument("--run-agentic", action="store_true",
+                    help="After successful match, start `pnpm dev` in my-anantrit")
+    ap.add_argument("--agentic-dir", type=str, default=str(PROJECT_ROOT / "my-anantrit"),
+                    help="Path to the agentic AI project (default: PROJECT_ROOT/my-anantrit)")
+    ap.add_argument("--agentic-cmd", type=str, default="pnpm dev",
+                    help="Command to run inside the agentic project (default: 'pnpm dev')")
+    ap.add_argument("--run-agentic-once", action="store_true",
+                    help="Only start the agentic server on the first successful match (ignore later matches)")
 
     args = ap.parse_args()
     if args.suppress_warnings:
@@ -286,7 +400,17 @@ def main():
                         # cooldown per person
                         prev = last_logged.get(vnorm, 0.0)
                         if now - prev >= args.cooldown:
-                            notify_success(last_face_name, beep=args.beep_on_match, write_overlay=args.overlay_on_match)
+                            notify_success(
+                                last_face_name,
+                                beep=args.beep_on_match,
+                                write_overlay=args.overlay_on_match,
+                                speak=args.speak_on_match,            # ADDED
+                                tts_voice=args.tts_voice,             # ADDED
+                                run_agentic=args.run_agentic,         # ADDED
+                                agentic_dir=args.agentic_dir,         # ADDED
+                                agentic_cmd=args.agentic_cmd,         # ADDED
+                                run_agentic_once=args.run_agentic_once# ADDED
+                            )
                             append_attendance(last_face_name, ok=True, reason="voice+face agree")
                             last_logged[vnorm] = now
                         else:

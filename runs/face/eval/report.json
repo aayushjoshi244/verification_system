@@ -3,9 +3,10 @@
   "accuracy_closed_set": 1.0,
   "per_class_f1": {
     "Aayush": 1.0,
-    "Khushi": 1.0
+    "Khushi": 1.0,
+    "priya_gurjar": 1.0
   },
-  "support": 15,
+  "support": 19,
   "threshold_recommended": 0.4,
   "threshold_recommended_accuracy": 1.0
 }
