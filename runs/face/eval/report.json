@@ -2,11 +2,10 @@
   "mode": "holdout",
   "accuracy_closed_set": 1.0,
   "per_class_f1": {
-    "Aayush": 1.0,
-    "Khushi": 1.0,
-    "priya_gurjar": 1.0
+    "aayush": 1.0,
+    "aayush_joshi": 1.0
   },
-  "support": 19,
+  "support": 10,
   "threshold_recommended": 0.4,
   "threshold_recommended_accuracy": 1.0
 }

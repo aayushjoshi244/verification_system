@@ -1,4 +1,3 @@
-# src/common/main_register.py
 import sys
 import subprocess
 import os
@@ -43,6 +42,8 @@ def main():
     ap.add_argument("--mic-index", type=int, default=None, help="Audio device index for enrol. If omitted, tool default is used.")
     ap.add_argument("--drop-outliers", type=float, default=0.2, help="Outlier drop fraction for voice prototype embedding.")
     ap.add_argument("--quiet", action="store_true", help="Suppress noisy Python warnings in child processes.")
+    # NEW: default to face-cam 1 (can be overridden)
+    ap.add_argument("--face-cam", type=int, default=1, help="Camera index for guided face capture (default: 1).")
     args = ap.parse_args()
 
     # Name
@@ -65,17 +66,26 @@ def main():
         attempts = 0
         while True:
             attempts += 1
-            print("\n[FACE] Starting guided capture… (attempt", attempts, ")")
-            # Call your guided register with configurable per-pose
+            print(f"\n[FACE] Starting guided capture… (attempt {attempts}) using face cam index: {args.face_cam}")
+            # Call your guided register with configurable per-pose and face-cam.
+            # We detect the guided_register signature to pass the right keyword if supported.
             rc = run(
-                [
-                    sys.executable, "-c",
-                    "import sys; from src.facerec.app_main import guided_register; "
-                    "guided_register(sys.argv[1], per_pose=int(sys.argv[2]))",
-                    name, str(args.per_pose),
-                ],
-                env=child_env,
+                        [
+                            sys.executable, "-c",
+                                (
+                                    "import sys,inspect;"
+                                    "from src.facerec.app_main import guided_register;"
+                                    "name=sys.argv[1]; per_pose=int(sys.argv[2]); cam=int(sys.argv[3]);"
+                                    "params=inspect.signature(guided_register).parameters; kw={'per_pose': per_pose};"
+                                    "pn=next((k for k in ('face_cam','cam_index','camera','cam') if k in params), None);"
+                                    "(kw.update({pn: cam}) if pn else None);"
+                                    "guided_register(name, **kw)"
+                                ),
+                            name, str(args.per_pose), str(args.face_cam),
+                        ],
+                        env=child_env,
             )
+
             if rc != 0:
                 print("[ERROR] Face guided capture failed.")
                 sys.exit(rc)

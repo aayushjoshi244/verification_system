@@ -3,28 +3,24 @@ import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { config } from "dotenv";
 import { exec } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createWriteStream } from "node:fs";
 import path from "node:path";
-
-// ---------- ADDED: interactive typed input ----------
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-// ----------------------------------------------------
+import mic from "mic";
+import say from "say";
 
-// ---------- ADDED: offline voice support (Vosk + mic) ----------
-import vosk from "vosk";                 // npm i vosk
-import record from "node-record-lpcm16"; // npm i node-record-lpcm16
-// ---------------------------------------------------------------
+// Load .env BEFORE reading any process.env values
+config();
 
+const VOICE_TTS = (process.env.VOICE_TTS ?? "1") !== "0";
 const USE_SYNTH_FALLBACK = process.env.USE_SYNTH_FALLBACK === "1";
 
-// ---------- ADDED: voice config (env) ----------
-const VOICE_MODE = process.env.VOICE_MODE === "1";              // set to "1" to enable voice capture
-const VOSK_MODEL_PATH = process.env.VOSK_MODEL_PATH || "./stt-model"; // folder containing Vosk model (e.g., vosk-model-small-en-us-0.15)
+// ---------- VOICE CONFIG ----------
+const VOICE_MODE = (process.env.VOICE_MODE ?? "1") !== "0";  // default: ON
+const VOICE_SECONDS = Number(process.env.VOICE_SECONDS || 6);
 const VOICE_SAMPLE_RATE = Number(process.env.VOICE_SAMPLE_RATE || 16000);
-const VOICE_TIMEOUT_MS = Number(process.env.VOICE_TIMEOUT_MS || 12000);
-// ------------------------------------------------
 
-config();
 console.log("📌 CWD at start:", process.cwd());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -251,6 +247,14 @@ function parseToolandInput(toolField, inputField) {
   const m = toolStr.match(/^(\w+)\s*\(\s*([^)]*)\s*\)\s*$/);
   if (m) return { tool: m[1], input: m[2] };
   return { tool: toolStr || "", input: inputField ?? "" };
+}
+
+function speak(text, { rate = 1.0, maxChars = 600 } = {}) {
+  if (!VOICE_TTS || !text) return Promise.resolve();
+  const out = String(text).replace(/\s+/g, " ").trim().slice(0, maxChars);
+  return new Promise((resolve, reject) =>
+    say.speak(out, undefined, rate, (err) => (err ? reject(err) : resolve()))
+  );
 }
 
 function safeParseJSON(text) {
@@ -819,8 +823,66 @@ body{font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto
   ];
 }
 
+/* --------------------------- Canned Replies -------------------------------- */
+function formatList(arr) {
+  return arr.length === 1 ? arr[0] :
+         arr.length === 2 ? `${arr[0]} and ${arr[1]}` :
+         `${arr.slice(0, -1).join(", ")}, and ${arr[arr.length - 1]}`;
+}
+
+// Returns a string if a canned reply matched, otherwise null
+function getCannedReply(q) {
+  if (!q) return null;
+  const text = q.toLowerCase().trim();
+
+  // pull optional details from env
+  const primaryEmail = process.env.PRIMARY_EMAIL || "your account";
+  const loginEmails = (process.env.LOGIN_EMAILS || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  // 1) Google Cloud storage
+  if (/\b(what('?s)?|tell me)\b.*\b(google\s*)?cloud storage\b/.test(text)) {
+    return `It's currently 9 GB, sir, for ${primaryEmail}.`;
+  }
+
+  // 2) How many email IDs are logged in
+  if (/\bhow many\b.*\b(email\s*id|email(?:s)?|accounts?)\b.*\b(logged in|in my system|present)\b/.test(text)) {
+    if (loginEmails.length === 0) {
+      return `I see 0 email accounts configured. You can set LOGIN_EMAILS in your .env to populate this.`;
+    }
+    const listed = formatList(loginEmails);
+    const plural = loginEmails.length === 1 ? "is" : "are";
+    return `The email ID${loginEmails.length === 1 ? "" : "s"} currently logged in ${plural} ${loginEmails.length}: ${listed}.`;
+  }
+
+  // 3) Who are you?
+  if (/\bwho are you\b|\bwhat are you\b/.test(text)) {
+    return `I'm Anantrit, your agentic assistant. I can read/write files, build small apps, and talk using text-to-speech.`;
+  }
+
+  // 4) Which model are you using?
+  if (/\bwhich model\b|\bwhat model\b|\bmodel are you using\b/.test(text)) {
+    return `I'm using Google's gemini-1.5-flash for reasoning and transcription.`;
+  }
+
+  // 5) Current working directory (handy local fact)
+  if (/\b(current|present)\b.*\bworking directory\b|\bcwd\b/.test(text)) {
+    return `Your current working directory is: ${process.cwd()}`;
+  }
+
+  return null;
+}
+
+
 /* --------------------------- Agent Loop ----------------------------------- */
 async function runWorkflow(userQuestion, { maxSteps = 200 } = {}) {
+  const canned = getCannedReply(userQuestion);
+  if (canned) {
+    await speak(canned);
+    return canned;
+  }  
   // ✅ Local fast-paths BEFORE any Gemini calls:
   const baseDirEarly = inferProjectDir(userQuestion);
 
@@ -1043,73 +1105,6 @@ async function runWorkflow(userQuestion, { maxSteps = 200 } = {}) {
   throw new Error("Max steps reached without OUTPUT");
 }
 
-/* --------------------------- Voice capture (unchanged) -------------------- */
-async function listenForVoiceCommand({
-  modelPath = VOSK_MODEL_PATH,
-  sampleRate = VOICE_SAMPLE_RATE,
-  timeoutMs = VOICE_TIMEOUT_MS,
-} = {}) {
-  try {
-    const st = await fs.stat(modelPath);
-    if (!st.isDirectory()) throw new Error("not a directory");
-  } catch {
-    console.error(`❌ Vosk model not found at "${modelPath}". Set VOSK_MODEL_PATH or disable VOICE_MODE.`);
-    return "";
-  }
-
-  vosk.setLogLevel(0);
-  const model = new vosk.Model(modelPath);
-  const rec = new vosk.Recognizer({ model, sampleRate });
-
-  console.log("🎙️  Speak your command (e.g., “create a todo app” or “create a weather app”)…");
-
-  const mic = record.record({
-    sampleRateHertz: sampleRate,
-    threshold: 0,
-    verbose: false,
-    recordProgram: process.platform === "win32" ? "sox" : "rec",
-    audioType: "wav",
-    endOnSilence: true,
-    silence: "1.0",
-  });
-
-  const stream = mic.stream();
-  let finalText = "";
-  let timedOut = false;
-
-  const tm = setTimeout(() => {
-    timedOut = true;
-    try { mic.stop(); } catch {}
-  }, timeoutMs);
-
-  stream.on("data", (data) => {
-    rec.acceptWaveform(data);
-  });
-
-  const endPromise = new Promise((resolve) => {
-    stream.on("end", () => resolve());
-    stream.on("close", () => resolve());
-    stream.on("error", () => resolve());
-  });
-
-  await endPromise;
-  clearTimeout(tm);
-
-  try {
-    const res = rec.finalResult(); // { text: "..." }
-    finalText = (res && res.text) ? String(res.text).trim() : "";
-  } catch {}
-  rec.free();
-  model.free();
-
-  if (!finalText && timedOut) {
-    console.log("⌛ Voice capture timeout. No speech recognized.");
-  } else {
-    console.log("📝 Recognized:", finalText || "(empty)");
-  }
-  return finalText;
-}
-
 /* --------------------------- ADDED: prompt helpers ------------------------ */
 async function promptOnce(message) {
   const rl = readline.createInterface({ input, output });
@@ -1118,53 +1113,149 @@ async function promptOnce(message) {
   return (ans || "").trim();
 }
 
+// Record a short WAV with mic (requires SoX on Windows)
+function recordOnce({ seconds = VOICE_SECONDS, file = "input.wav", sampleRate = VOICE_SAMPLE_RATE } = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const micInstance = mic({
+        rate: String(sampleRate),
+        channels: "1",
+        bitwidth: "16",
+        encoding: "signed-integer",
+        endian: "little",
+        fileType: "wav",
+        // On Windows, mic uses arecord/sox under the hood if available.
+      });
+
+      const micInputStream = micInstance.getAudioStream();
+      const outPath = path.resolve(file);
+      const writeStream = createWriteStream(outPath);
+
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(outPath); } };
+      const fail = (e) => { if (!done) { done = true; reject(e); } };
+
+      micInputStream.on("error", fail);
+      writeStream.on("error", fail);
+      writeStream.on("finish", finish);
+
+      micInputStream.pipe(writeStream);
+
+      console.log(`🎙️ Recording… (speak now, ${seconds}s)`);
+      micInstance.start();
+
+      setTimeout(() => {
+        try { micInstance.stop(); } catch {}
+      }, seconds * 1000);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// Send WAV to Gemini for transcription only (no agent system prompt here)
+async function askGeminiWithAudio(
+  wavPath,
+  promptText = "Transcribe the audio. Return only the raw recognized text, no JSON, no punctuation normalization."
+) {
+  const audioBytes = (await fs.readFile(wavPath)).toString("base64");
+
+  // Use a clean model without systemInstruction, so it won't try to emit JSON steps
+  const asrModel = client.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const res = await asrModel.generateContent({
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: promptText },
+          { inlineData: { data: audioBytes, mimeType: "audio/wav" } },
+        ],
+      },
+    ],
+  });
+
+  return (res?.response?.text?.() || "").trim();
+}
+
+// Wrapper: record, transcribe, return the command text
+async function captureAndTranscribe({ seconds = 5 } = {}) {
+  try {
+    const wavPath = await recordOnce({ seconds });
+    const text = await askGeminiWithAudio(wavPath);
+    if (!text) {
+      console.log("🤷 No speech recognized.");
+      return "";
+    }
+    console.log("📝 Recognized:", text);
+    return text;
+  } catch (err) {
+    console.error("🎤 Voice error:", err?.message || err);
+    return "";
+  }
+}
+
+
 // Get next prompt, supporting both text and voice each iteration.
 async function getNextPrompt(defaultText) {
   if (VOICE_MODE) {
-    const choice = await promptOnce(
-      "🧑‍💻 Type a command, or enter 'v' for voice, or 'exit' to quit:\n> "
-    );
-    if (!choice) return defaultText;
-    if (/^(exit|quit|q)$/i.test(choice)) return "__EXIT__";
-    if (/^v$/i.test(choice)) {
-      const heard = await listenForVoiceCommand();
-      return heard || "";
-    }
-    return choice;
-  } else {
-    const typed = await promptOnce(
-      "🧑‍💻 Type a command (or 'exit' to quit). Press Enter for default:\n> "
-    );
-    if (/^(exit|quit|q)$/i.test(typed)) return "__EXIT__";
-    return typed || defaultText;
+    const heard = await captureAndTranscribe({ seconds: VOICE_SECONDS });
+    return (heard || "").trim() || defaultText;
   }
+  // Fallback to keyboard only if VOICE_MODE=0
+  const typed = await promptOnce("🧑‍💻 Type a command (or 'exit' to quit). Press Enter for default:\n> ");
+  if (/^(exit|quit|q)$/i.test(typed)) return "__EXIT__";
+  return typed || defaultText;
 }
 
 /* --------------------------- Demo / Entry (REPL) -------------------------- */
 async function init() {
   try {
-    // First iteration can accept CLI args; after that we loop forever.
     const cliArg = process.argv.slice(2).join(" ").trim();
-    let next = cliArg || (VOICE_MODE ? "" : "Create a weather app with HTML, CSS and JS that shows a 7-day forecast");
+    let next = cliArg;
 
-    // REPL loop
-    for (;;) {
+    // If nothing was passed in, capture voice immediately (voice-only UX)
+    if (!next && VOICE_MODE) {
+      console.log("🎙️ Voice mode enabled — say your command (e.g., “create a todo app”) …");
+      next = await captureAndTranscribe({ seconds: VOICE_SECONDS });
       if (!next) {
-        next = await getNextPrompt("Create a todo app with HTML, CSS and JS");
+        console.log("🤷 Didn’t catch that. I’ll ask again.");
+        next = await getNextPrompt("create a todo app");
+        if (next === "__EXIT__") return;
       }
+    }
+
+    if (!next) {
+      next = await getNextPrompt("create a todo app");
+      if (next === "__EXIT__") return;
+    }
+
+    // REPL loop — voice each round
+    for (;;) {
       if (next === "__EXIT__") {
         console.log("👋 Bye!");
         break;
       }
+
       if (!next.trim()) {
-        console.log("ℹ️ Empty input. Skipping.");
-      } else {
-        console.log("🧾 Using prompt:", JSON.stringify(next));
-        const final = await runWorkflow(next);
-        console.log("\n🤖 Final:\n" + final + "\n");
+        next = await getNextPrompt("create a todo app");
+        if (next === "__EXIT__") break;
+        if (!next.trim()) continue;
       }
-      // Ask again for the next round
-      next = "";
+
+      console.log("🧾 Using prompt:", JSON.stringify(next));
+      const final = await runWorkflow(next);
+      console.log("\n🤖 Final:\n" + final + "\n");
+
+      // Speak a concise summary instead of the whole blob
+      const spoken = 
+        /✅/.test(final)
+          ? final.split("\n").slice(0,2).join(". ")
+          : final;
+      await speak(spoken);
+
+      // Ask for the next voice command
+      next = await getNextPrompt("");
     }
   } catch (err) {
     if (err?.status === 429) {

@@ -207,42 +207,42 @@ def _tts_speak(text: str, voice: Optional[str] = None):
 # ---------- ADDED: Agentic AI launcher ----------
 _AGENTIC_STARTED = False  # track to prevent multiple launches when --run-agentic-once is set
 
-def run_agentic_ai(agentic_dir: Path, agentic_cmd: str, once: bool):
-    """
-    Change directory into the agentic project and run its dev command.
-    Spawns non-blocking so the detection loop continues.
-    """
-    global _AGENTIC_STARTED
-    try:
-        if once and _AGENTIC_STARTED:
-            print("[INFO] Agentic AI already started (once). Skipping.")
-            return
+# def run_agentic_ai(agentic_dir: Path, agentic_cmd: str, once: bool):
+#     """
+#     Change directory into the agentic project and run its dev command.
+#     Spawns non-blocking so the detection loop continues.
+#     """
+#     global _AGENTIC_STARTED
+#     try:
+#         if once and _AGENTIC_STARTED:
+#             print("[INFO] Agentic AI already started (once). Skipping.")
+#             return
 
-        if not agentic_dir.exists():
-            print(f"[ERROR] Agentic dir does not exist: {agentic_dir}")
-            return
+#         if not agentic_dir.exists():
+#             print(f"[ERROR] Agentic dir does not exist: {agentic_dir}")
+#             return
 
-        # On Windows, shell=True will find pnpm.cmd. On POSIX, keep shell=False.
-        use_shell = sys.platform.startswith("win")
-        cmd = agentic_cmd if use_shell else agentic_cmd.split()
+#         # On Windows, shell=True will find pnpm.cmd. On POSIX, keep shell=False.
+#         use_shell = sys.platform.startswith("win")
+#         cmd = agentic_cmd if use_shell else agentic_cmd.split()
 
-        # Detach process so it stays up independently
-        creationflags = 0
-        if sys.platform.startswith("win"):
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+#         # Detach process so it stays up independently
+#         creationflags = 0
+#         if sys.platform.startswith("win"):
+#             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
 
-        subprocess.Popen(
-            cmd,
-            cwd=str(agentic_dir),
-            shell=use_shell,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-        _AGENTIC_STARTED = True
-        print(f"[INFO] Started Agentic AI in {agentic_dir} with `{agentic_cmd}`")
-    except Exception as e:
-        print(f"[ERROR] Failed to start Agentic AI: {e}")
+#         subprocess.Popen(
+#             cmd,
+#             cwd=str(agentic_dir),
+#             shell=use_shell,
+#             stdout=subprocess.DEVNULL,
+#             stderr=subprocess.DEVNULL,
+#             creationflags=creationflags,
+#         )
+#         _AGENTIC_STARTED = True
+#         print(f"[INFO] Started Agentic AI in {agentic_dir} with `{agentic_cmd}`")
+#     except Exception as e:
+#         print(f"[ERROR] Failed to start Agentic AI: {e}")
 
 def notify_success(name: str, beep: bool, write_overlay: bool, speak: bool = False, tts_voice: Optional[str] = None,
                    run_agentic: bool = False, agentic_dir: Optional[str] = None, agentic_cmd: Optional[str] = None,
